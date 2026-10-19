@@ -57,6 +57,8 @@ Slyblime opens a native Sublime Text view for each Slynk REPL channel. Press `Ct
 
 In a Lisp source file, press `Ctrl+Enter` / `Cmd+Enter` to evaluate the form at the cursor, or `Ctrl+Shift+Enter` / `Cmd+Shift+Enter` to evaluate the whole buffer. Form evaluation uses the package declared by the nearest preceding `in-package` form; buffer evaluation processes the file's forms in order.
 
+To load an ASDF system from the current project, press `Ctrl+Alt+Enter` / `Cmd+Option+Enter` in a Lisp source file, or run `Sly: Load ASDF project` from the command palette. Select its `.asd` file from the quick panel. The command uses the ASDF already provided by the Lisp implementation and does not require Quicklisp; dependencies still need to be installed and discoverable by ASDF.
+
 ### Using an inferior Lisp
 
 Go to the settings and set the inferior lisp command to what you want (by default it's `sbcl`).

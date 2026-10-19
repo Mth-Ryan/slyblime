@@ -134,6 +134,19 @@ class EvaluationKeybindingTests(unittest.TestCase):
         bindings = read_sublime_json(ROOT / "src" / "Default.sublime-keymap")
         self.assertFalse(any(binding.get("keys") == ["primary+\'"] for binding in bindings))
 
+    def test_asdf_project_command_is_available_from_palette_and_keybinding(self):
+        commands = read_sublime_json(ROOT / "src" / "Default.sublime-commands")
+        command = next(item for item in commands
+                       if item.get("caption") == "Sly: Load ASDF project")
+        self.assertEqual(command["command"], "sly_load_asdf_project")
+
+        bindings = read_sublime_json(ROOT / "src" / "Default.sublime-keymap")
+        self.assertTrue(any(
+            binding.get("keys") == ["ctrl+alt+enter"]
+            and binding.get("command") == "sly_load_asdf_project"
+            for binding in bindings
+        ))
+
     def test_evaluate_buffer_commands_use_region_evaluation(self):
         def find_commands(items):
             for item in items:

@@ -43,6 +43,20 @@
 			{ "key": "setting.is-sly-repl", "operator": "not_equal", "operand": true }
 		]
 	},
+	{ "keys": ["ctrl+alt+enter"], "command": "sly_load_asdf_project",
+	  "context":
+		[
+			{ "key": "selector", "operator": "equal", "operand": "source.lisp" },
+			{ "key": "setting.is-sly-repl", "operator": "not_equal", "operand": true }
+		]
+	},
+	{ "keys": ["super+alt+enter"], "command": "sly_load_asdf_project",
+	  "context":
+		[
+			{ "key": "selector", "operator": "equal", "operand": "source.lisp" },
+			{ "key": "setting.is-sly-repl", "operator": "not_equal", "operand": true }
+		]
+	},
 	{ "keys": ["primary+shift+enter"], "command": "sly_eval_region",
 	  "args": { "input_source": "buffer" },
 	  "context":

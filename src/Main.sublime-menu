@@ -138,6 +138,10 @@
                         "command": "sly_load_file"
                     },
                     {
+                        "caption": "Load ASDF project…",
+                        "command": "sly_load_asdf_project"
+                    },
+                    {
                         "caption": "Clear compilation notes",
                         "command": "sly_remove_note_highlighting"
                     },
