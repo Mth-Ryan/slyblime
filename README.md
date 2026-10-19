@@ -55,6 +55,8 @@ Backreferences
 ## Usage
 Slyblime opens a native Sublime Text view for each Slynk REPL channel. Press `Ctrl+Enter` / `Cmd+Enter` at the current prompt to submit an expression; use `Shift+Enter` to add a newline.
 
+In a Lisp source file, press `Ctrl+Enter` / `Cmd+Enter` to evaluate the form at the cursor, or `Ctrl+Shift+Enter` / `Cmd+Shift+Enter` to evaluate the whole buffer. Form evaluation uses the package declared by the nearest preceding `in-package` form; buffer evaluation processes the file's forms in order.
+
 ### Using an inferior Lisp
 
 Go to the settings and set the inferior lisp command to what you want (by default it's `sbcl`).

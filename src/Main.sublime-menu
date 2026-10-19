@@ -147,7 +147,7 @@
                     },
                     {
                         "caption": "Evaluate contents of view",
-                        "command": "sly_eval",
+                        "command": "sly_eval_region",
                         "args": {
                             "input_source": "buffer"
                         }

@@ -35,11 +35,17 @@ async def determine_input(view, input_source, event):
     elif "toplevel" == input_source:
         region = util.find_toplevel_form(view, point)
     elif input_source == "form":
-        region = util.find_containing_form(view, point)
+        selection = next((region for region in view.sel()
+                          if region.begin() != region.end()), None)
+        region = selection or util.find_containing_form(view, point)
     elif "buffer" == input_source:
-        region = Region(0, view.size() - 1)
+        region = Region(0, view.size())
     else:
         view.window().status_message("Command error: unable to determine input")
+        return None, None
+
+    if region is None:
+        view.window().status_message("No s-expression found at the cursor")
         return None, None
 
     if isinstance(input_source, str):

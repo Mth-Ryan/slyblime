@@ -27,8 +27,29 @@
 			{ "key": "setting.auto_complete_commit_on_tab", "operand": true }
 		]
 	},
-	{ "keys": ["primary+'"], "command": "sly_compile_top_level", "args": {},
-	  "context":[]
+	{ "keys": ["ctrl+enter"], "command": "sly_eval_region",
+	  "args": { "input_source": "form" },
+	  "context":
+		[
+			{ "key": "selector", "operator": "equal", "operand": "source.lisp" },
+			{ "key": "setting.is-sly-repl", "operator": "not_equal", "operand": true }
+		]
+	},
+	{ "keys": ["super+enter"], "command": "sly_eval_region",
+	  "args": { "input_source": "form" },
+	  "context":
+		[
+			{ "key": "selector", "operator": "equal", "operand": "source.lisp" },
+			{ "key": "setting.is-sly-repl", "operator": "not_equal", "operand": true }
+		]
+	},
+	{ "keys": ["primary+shift+enter"], "command": "sly_eval_region",
+	  "args": { "input_source": "buffer" },
+	  "context":
+		[
+			{ "key": "selector", "operator": "equal", "operand": "source.lisp" },
+			{ "key": "setting.is-sly-repl", "operator": "not_equal", "operand": true }
+		]
 	},
 ]
 

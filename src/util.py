@@ -246,30 +246,69 @@ def find_toplevel_form(view, point: int=None, max_iterations=100) -> Optional[Re
         return None
 
 def find_containing_form(view, point: int=None, max_iterations=1000) -> Optional[Region]:
-    point = point or view.sel()[0].begin()
-    def find_extremity(point:int, direction: int, enter_scope: str, exit_scope: str):
-        unclosed_meta_scopes = 0
-        for i in range(0, max_iterations):
-            region = view.word(point)
-            word = view.substr(region)
-            if not ("(" in word or ")" in word):
-                if direction > 0:
-                    point = region.end()
-                elif direction < 0:
-                    point = region.begin()
-            *__, scope = get_scopes(view, point)
-            if enter_scope in scope:
-                unclosed_meta_scopes += 1
-            elif exit_scope in scope:
-                if unclosed_meta_scopes == 0:
-                    return point
-                unclosed_meta_scopes -= 1
-            point += direction
+    point = view.sel()[0].begin() if point is None else point
+    size = view.size()
+    point = max(0, min(point, size))
+
+    def paren_at(index):
+        if index < 0 or index >= size:
+            return None
+        scopes = view.scope_name(index)
+        if "punctuation.section.parens.begin" in scopes:
+            return "("
+        if "punctuation.section.parens.end" in scopes:
+            return ")"
         return None
-    start = find_extremity(point, -1, "parens.end", "parens.begin")
-    end = find_extremity(point, 1, "parens.begin", "parens.end")
-    # Plus one because regions are [x .. y) intervals
-    return Region(start, end+1) if start and end else None
+
+    def matching_end(start):
+        depth = 0
+        for index in range(start, min(size, start + max_iterations)):
+            paren = paren_at(index)
+            if paren == "(":
+                depth += 1
+            elif paren == ")":
+                depth -= 1
+                if depth == 0:
+                    return index + 1
+        return None
+
+    def matching_start(end):
+        depth = 0
+        for index in range(end, max(-1, end - max_iterations), -1):
+            paren = paren_at(index)
+            if paren == ")":
+                depth += 1
+            elif paren == "(":
+                depth -= 1
+                if depth == 0:
+                    return index
+        return None
+
+    # A caret on an opening delimiter selects the form starting there.
+    if paren_at(point) == "(":
+        end = matching_end(point)
+        return Region(point, end) if end is not None else None
+
+    # A caret on or immediately after a closing delimiter selects that form.
+    close = point if paren_at(point) == ")" else point - 1
+    if paren_at(close) == ")":
+        start = matching_start(close)
+        if start is not None:
+            return Region(start, close + 1)
+
+    # Otherwise locate the nearest enclosing opening delimiter.
+    depth = 0
+    lower_bound = max(-1, point - max_iterations - 1)
+    for index in range(point - 1, lower_bound, -1):
+        paren = paren_at(index)
+        if paren == ")":
+            depth += 1
+        elif paren == "(":
+            if depth == 0:
+                end = matching_end(index)
+                return Region(index, end) if end is not None else None
+            depth -= 1
+    return None
 
 
 def event_to_point(view, event: Dict[str, int]) -> Tuple[int]:
