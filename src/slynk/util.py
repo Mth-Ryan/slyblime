@@ -66,7 +66,6 @@ class Repl(Dispatcher):
     def process_message(self, data):
         command = data[0].lower()[1:]
         if command == "server-side-repl-close":
-            self.print("Closed from serverside")
             self.channel.is_open = False
             self.is_open = False
         elif command == "set-read-mode":

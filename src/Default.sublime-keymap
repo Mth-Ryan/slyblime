@@ -1,29 +1,29 @@
 [
-	{ "keys": ["shift+enter"], "command": "repl_newline", "args": {},
+	{ "keys": ["shift+enter"], "command": "sly_repl_newline", "args": {},
 	"context":
 		[
-			{ "key": "setting.repl", "operator": "equal", "operand": true },
+			{ "key": "setting.is-sly-repl", "operator": "equal", "operand": true },
 			{ "key": "auto_complete_visible", "operator": "equal", "operand": false }
 		]
 	},
-	{ "keys": ["shift+enter"], "command": "repl_newline", "args": {},
+	{ "keys": ["shift+enter"], "command": "sly_repl_newline", "args": {},
 	"context":
 		[
-			{ "key": "setting.repl", "operator": "equal", "operand": true },
+			{ "key": "setting.is-sly-repl", "operator": "equal", "operand": true },
 			{ "key": "setting.auto_complete_commit_on_tab", "operand": true }
 		]
 	},
-	{ "keys": ["primary+enter"], "command": "repl_enter", "args": {"forced": true},
+	{ "keys": ["primary+enter"], "command": "sly_repl_submit", "args": {},
 	"context":
 		[
-			{ "key": "setting.repl", "operator": "equal", "operand": true },
+			{ "key": "setting.is-sly-repl", "operator": "equal", "operand": true },
 			{ "key": "auto_complete_visible", "operator": "equal", "operand": false }
 		]
 	},
-	{ "keys": ["primary+enter"], "command": "repl_enter", "args": {"forced": true},
+	{ "keys": ["primary+enter"], "command": "sly_repl_submit", "args": {},
 	"context":
 		[
-			{ "key": "setting.repl", "operator": "equal", "operand": true },
+			{ "key": "setting.is-sly-repl", "operator": "equal", "operand": true },
 			{ "key": "setting.auto_complete_commit_on_tab", "operand": true }
 		]
 	},

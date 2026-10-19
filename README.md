@@ -15,9 +15,15 @@
 
 [![ko-fi](https://www.ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/U7U11ZLB8)
 
-Slyblime is Sylvester the Cat's Common Lisp IDE for **Sublime Text 4**:
+Slyblime is Sylvester the Cat's Common Lisp IDE for **Sublime Text 4 (Python host 3.14)**:
 
-Slyblime is an implementation of [SLY](https://github.com/joaotavora/sly) and uses the same backend (SLYNK). 
+## About this fork
+
+This is a personal fork created to modernize Slyblime and and connect Sublime Text to Common Lisp through [SLY/SLYNK](https://github.com/joaotavora/sly). The SublimeREPL dependency has been removed.
+
+**Validated versions:** Sublime Text 4 build **4215** (Python host **3.14**), unit tests on Python **3.14.6**, and **SBCL 2.6.9**. The SLY submodule is at upstream `master`, commit `9b3477a5dc6c9a4496d4fbb6804349961e861835`. Other Sublime builds and Lisp implementations have not been validated.
+
+Slyblime is an implementation of [SLY](https://github.com/joaotavora/sly) and uses the same backend (SLYNK).
 
 Currently it includes:
 
@@ -34,10 +40,8 @@ Currently it includes:
 The primary missing feature is the ability to use stickers from Sly.
 
 ## Installation
-First install [SublimeREPL](https://github.com/wuub/SublimeREPL) and this plugin.
-Use Package Control to install them, or download and unzip the plugins in your packages folder.
-Then type `Sly: Upgrade SublimeREPL to work with Sly` into the command palette.
-Finally, to get started just run `Sly: Start and connect to an inferior Lisp instance` in the command palette (you may need to change the default lisp program in the settings).
+Download this repo into your Sublime Text Packages folder. Slyblime provides its own REPL view and does not require Quicklisp or SublimeREPL. The default inferior Lisp command is `sbcl`; change it in the Slyblime settings if you use another implementation.
+To get started, run `Sly: Start and connect to an inferior Lisp instance` from the command palette.
 
 ## Obligatory animated GIFs section
 Flex Completion
@@ -49,11 +53,11 @@ Backreferences
 ![Backreferences](./docs/animations/backreference.gif)
 
 ## Usage
-Make sure to install SublimeREPL (via Package Control) and then running `Sly: Upgrade SublimeREPL to work with Sly` into the command palette before attempting to use Slyblime!
+Slyblime opens a native Sublime Text view for each Slynk REPL channel. Press `Ctrl+Enter` / `Cmd+Enter` at the current prompt to submit an expression; use `Shift+Enter` to add a newline.
 
 ### Using an inferior Lisp
 
-Go to the settings and set the inferior lisp command to what you want (by default it's `lisp`).
+Go to the settings and set the inferior lisp command to what you want (by default it's `sbcl`).
 After that run `Sly: Start and connect to an inferior Lisp instance` to start a inferior lisp and REPL.
 
 ### External connexion
@@ -84,6 +88,8 @@ class SimpleTranslator(PathnameTranslator):
 ## Developping
 
 The recommended way to develop is to clone this repo somewhere, then symlink the `src` folder to the Sublime packages folder and symlink the `sly` submodule folder into the `src` folder. While this may seem convolouted, this allows almost all files to remain toplevel in the package folder which means that Sublime Text will reload them upon modification, speeding up editing speed.
+
+The Python unit tests live outside `src` so Sublime Text does not load them. Run them with `python -m unittest discover -s tests -v`.
 
 ## Copying
 

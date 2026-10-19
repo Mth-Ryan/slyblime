@@ -1,5 +1,6 @@
 import sublime
-from .sly import *
+import sublime_plugin
+from . import sly
 from . import util
 import importlib
 import os
@@ -8,7 +9,7 @@ from typing import *
 translators = []
 
 class PathnameTranslator():
-    def is_active(self, session: SlynkSession) -> bool:
+    def is_active(self, session) -> bool:
         raise NotImplementedError()
 
     def local_to_remote(self, pathname: str) -> str:
@@ -54,6 +55,13 @@ def get_translators():
     try:
         translator_module = importlib.import_module("User.slyblime.filename_translators")
         importlib.reload(translator_module)
+    except ModuleNotFoundError as e:
+        if e.name not in {
+            "User",
+            "User.slyblime",
+            "User.slyblime.filename_translators",
+        }:
+            print(f"Failed to import filename translators module: {e}")
     except Exception as e:
         print(f"Failed to import filename translators module: {e}")
         pass
@@ -89,7 +97,7 @@ async def get_translator(window, session, show_change_messages=False):
             window.status_message(f"Internal name: {active_translators[index].__class__}")
 
         index = await util.show_quick_panel(
-            loop,
+            sly.loop,
             window,
             [translator.description for translator in active_translators],
             sublime.KEEP_OPEN_ON_FOCUS_LOST,
@@ -103,11 +111,11 @@ async def get_translator(window, session, show_change_messages=False):
 
 class SlyChangeFilenameTranslatorCommand(sublime_plugin.WindowCommand):
     def run(self, **kwargs):
-        session = sessions.get_by_window(self.window)
+        session = sly.sessions.get_by_window(self.window)
         if session is None: return
         asyncio.run_coroutine_threadsafe(
             self.async_run(session, self.window, **kwargs), 
-            loop)
+            sly.loop)
 
     async def async_run(self, session, window, translator_name=None, require_active=True):
         if translator_name:

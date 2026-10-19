@@ -202,7 +202,7 @@ class SlyReferenceCommand(sublime_plugin.TextCommand):
                 out += f"      {name}: in \x1F\n"
                 if snippet:
                     out += ui.number_lines(snippet, "          ") + "\n"
-        results.run_command("repl_insert_text",
+        results.run_command("sly_insert_text",
             {"pos": (start := results.size()),
              "text": out})
 

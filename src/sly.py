@@ -10,6 +10,7 @@ from .tracer import Tracer
 import logging
 import functools
 from socket import socket
+import shlex
 from typing import *
 
 _settings = None
@@ -56,8 +57,11 @@ class SlynkSession:
     async def connect(self):
         slynk = self.slynk
         self.window.status_message(f"Attempting to connect to Slynk at {slynk.host}:{slynk.port} [≈ 1 min]")
-        await slynk.connect(loop)
-        await slynk.prepare(f"{packages_path()}/{__name__.split('.')[0]}")
+        await slynk.connect(self.loop)
+        local_package_path = (
+            f"{packages_path()}/{__name__.split('.')[0]}" if self.process else None
+        )
+        await slynk.prepare(local_package_path)
         self.filename_translator = await filename_translation.get_translator(self.window, self)
         set_timeout(
             lambda: self.window.run_command("sly_create_repl"),
@@ -82,7 +86,7 @@ class SlynkSession:
         elif self.process:
             sessions.orphaned_inferior_lisps.append(self)
         for repl_view in self.repl_views.values():
-            repl_view.closed()
+            repl_view.close()
 
 
     async def on_debug_setup(self, data):
@@ -128,8 +132,7 @@ class SlynkSession:
 class ConnectSlynkCommand(sublime_plugin.WindowCommand):
     def run(self, **kwargs):  # implement run method
         global loop
-        if not loop.is_running():
-            threading.Thread(target=loop.run_forever).start()
+        ensure_loop_running()
         asyncio.run_coroutine_threadsafe(
             self.async_run(**kwargs),
             loop)
@@ -145,6 +148,7 @@ class ConnectSlynkCommand(sublime_plugin.WindowCommand):
         if prompt_connexion in ["both", "port"] or port is None:
             port = await util.show_input_panel(
                 loop, self.window, "Enter port", str(port))
+        port = int(port)
 
         session = SlynkSession(host, port, self.window, loop)
         await session.connect()
@@ -155,59 +159,84 @@ class ConnectSlynkCommand(sublime_plugin.WindowCommand):
 class SlyStartLispCommand(sublime_plugin.WindowCommand):
     def run(self, **kwargs): 
         global loop
-        if not loop.is_running():
-            threading.Thread(target=loop.run_forever).start()
+        ensure_loop_running()
         asyncio.run_coroutine_threadsafe(
             self.async_run(**kwargs),
             loop)
 
     async def async_run(self, **kwargs):  # implement run method
+        session = None
         try:
-          global loop
-          params = settings().get("inferior_lisp_process")
-          """
-          Trick to get an avaliable port
-          Note however, there is a small race condition possible between 
-          getting the port and starting Slynk.
-          """
-          with socket() as s:
-              s.bind(('',0))
-              port = s.getsockname()[1]
-          session = SlynkSession("localhost", port, self.window, loop)
-          session.autoclose = params["autoclose"]
-  
-          session.process = await asyncio.create_subprocess_shell(
-              " ".join(params["command"]),
-              stdin=asyncio.subprocess.PIPE
-              #, stdout=asyncio.subprocess.PIPE # debug
-              )
-  
-          session.process.stdin.write("(print :test)".encode())
-          session.process.stdin.write( # Hate the trick below btw
-              f"""(load "{packages_path()}/{__name__.split('.')[0]
-                  }/sly/slynk/slynk-loader.lisp")""".encode())
-          await asyncio.sleep(params["loading_time"])
-  
-          session.process.stdin.write(
-              f"""
-              (slynk-loader:init
-                  :delete nil       
-                  :reload nil)
-              (slynk:create-server :port {port}
-                                   :dont-close {"nil" if params["autoclose"] else "t"})
-              """.encode())
-          await asyncio.sleep(params["setup_time"])
-  
-          await session.connect()
-          sessions.add(session)
-          sessions.set_by_window(self.window, session)
+            params = settings().get("inferior_lisp_process")
+            command = params["command"]
+            if isinstance(command, str):
+                command = shlex.split(command, posix=False)
+                command = [
+                    argument[1:-1]
+                    if len(argument) >= 2
+                    and argument[0] == argument[-1]
+                    and argument[0] in ("'", '"')
+                    else argument
+                    for argument in command
+                ]
+            if not command:
+                raise ValueError("The inferior_lisp_process.command setting is empty")
+
+            # Reserve a port, then pass the executable and arguments directly to
+            # Windows instead of asking a shell to reinterpret them.
+            with socket() as listener:
+                listener.bind(("127.0.0.1", 0))
+                port = listener.getsockname()[1]
+
+            session = SlynkSession("127.0.0.1", port, self.window, loop)
+            session.autoclose = params.get("autoclose", True)
+            session.process = await asyncio.create_subprocess_exec(
+                *command,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            asyncio.create_task(self.log_all(session.process))
+
+            loader_path = (
+                f"{packages_path()}/{__name__.split('.')[0]}"
+                "/sly/slynk/slynk-loader.lisp"
+            )
+            boot_script = (
+                f"(load {sexpdata.dumps(loader_path)})\n"
+                "(setf slynk-loader:*fasl-directory* "
+                "(merge-pathnames "
+                "(make-pathname :directory "
+                "(append '(:relative \".slyblime\" \"fasl\") "
+                "(list (format nil \"~A-~A-~A\" "
+                "(lisp-implementation-type) (lisp-implementation-version) "
+                "(machine-type))))) "
+                "(user-homedir-pathname)))\n"
+                "(slynk-loader:init :delete nil :reload nil)\n"
+                "(setf slynk::*slynk-wire-protocol-version* "
+                "(string-right-trim '(#\\Return #\\Newline) "
+                "slynk::*slynk-wire-protocol-version*))\n"
+                f"(slynk:create-server :port {port} "
+                f":dont-close {'nil' if session.autoclose else 't'})\n"
+            )
+            session.process.stdin.write(boot_script.encode("utf-8"))
+            await session.process.stdin.drain()
+
+            await asyncio.wait_for(session.connect(), timeout=60)
+            sessions.add(session)
+            sessions.set_by_window(self.window, session)
         except Exception as e:
-          self.window.status_message(f"Failed to start Lisp process {e}")
-          print(e)
+            self.window.status_message(f"Failed to start Lisp process: {e}")
+            print(f"Failed to start Lisp process: {e}")
+            if session and session.process and session.process.returncode is None:
+                session.process.terminate()
 
     async def log_all(self, p):
         while True:
-            print(await p.stdout.readline())
+            line = await p.stdout.readline()
+            if not line:
+                return
+            print(line.decode("utf-8", errors="replace"), end="")
 
 
 class Sessions:
@@ -215,9 +244,9 @@ class Sessions:
     Singleton object to store all the currently active sessions.
     Designed to allow a natural number of windows to be connected to one session.
     """
-    def __init__(self, sessions: Dict[SessionId, SlynkSession]={}, window_assignment: Dict[WindowId, Tuple[Window, SlynkSession]]={}):
-        self.sessions = sessions
-        self.window_assignment = window_assignment
+    def __init__(self, sessions=None, window_assignment=None):
+        self.sessions = {} if sessions is None else sessions
+        self.window_assignment = {} if window_assignment is None else window_assignment
         self.next_uid: SessionId = 0
         self.orphaned_inferior_lisps = []
 
@@ -288,17 +317,56 @@ class Sessions:
     def get_by_id(self, session_id: SessionId) -> SlynkSession:
         return self.sessions[session_id]
 
-if "ready" not in globals():
-    ready = True
-    print("Preparing stuff for SLY")
+if "sessions" not in globals():
     sessions = Sessions()
+if "loop" not in globals() or loop.is_closed():
     loop = asyncio.new_event_loop()
+loop_thread = globals().get("loop_thread")
+_loop_lock = threading.Lock()
+
+
+def ensure_loop_running():
+    global loop_thread
+    with _loop_lock:
+        if loop.is_running() or (loop_thread and loop_thread.is_alive()):
+            return
+        loop_thread = threading.Thread(
+            target=loop.run_forever,
+            name="Slyblime asyncio loop",
+            daemon=True,
+        )
+        loop_thread.start()
+
+
+def plugin_loaded():
     if settings().get("debug"):
         loop.set_debug(True)
         logging.basicConfig(level=logging.DEBUG)
-else:
-    sessions_1 = Sessions(sessions.sessions, sessions.window_assignment)
-    sessions = sessions_1
+
+
+def plugin_unloaded():
+    active_sessions = list(sessions.sessions.values())
+
+    async def shutdown():
+        for session in active_sessions:
+            try:
+                session.slynk.disconnect()
+            except Exception as error:
+                print(f"Error disconnecting Slynk during plugin unload: {error}")
+            if session.autoclose and session.process:
+                try:
+                    session.process.terminate()
+                except Exception as error:
+                    print(f"Error stopping inferior Lisp during plugin unload: {error}")
+        await asyncio.sleep(0)
+        loop.stop()
+
+    if loop.is_running():
+        asyncio.run_coroutine_threadsafe(shutdown(), loop)
+        if loop_thread and loop_thread is not threading.current_thread():
+            loop_thread.join(timeout=1)
+    sessions.sessions.clear()
+    sessions.window_assignment.clear()
 
 class SlyExitEventListener(sublime_plugin.EventListener):
     def on_init(self, views):
@@ -309,7 +377,7 @@ class SlyExitEventListener(sublime_plugin.EventListener):
                 print("Found sly open repl")
                 view.settings().set("sly-open-repl", False)
                 view.set_name("🏁" + view.name())
-                view.run_command("repl_insert_text",
+                view.run_command("sly_insert_text",
                     {"pos": len(view),
                      "text": "\n[🏁 Connexion terminated by Sublime Text exit.]"})
                 view.set_status("sly", "❌ " + view.settings().get("sly-repl-status"))

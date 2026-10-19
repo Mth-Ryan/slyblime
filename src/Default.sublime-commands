@@ -109,14 +109,6 @@
         "command": "sly_reference"
     },
     {
-        "caption": "Sly: Upgrade SublimeREPL to work with Sly",
-        "command": "sly_upgrade_sublime_repl"
-    },
-    {
-        "caption": "Sly: Downgrade SublimeREPL to the original version of Python",
-        "command": "sly_downgrade_sublime_repl"
-    },
-    {
         "caption": "Sly: Start and connect to an inferior Lisp instance",
         "command": "sly_start_lisp"
     },

@@ -6,12 +6,8 @@ import re
 from bisect import bisect_left
 
 from sublime import *
-import sublime_plugin, threading, asyncio  # import the required modules
+import sublime_plugin, asyncio
 
-from SublimeREPL import sublimerepl
-from SublimeREPL.repls import repl
-
-from . import pydispatch
 from .sly import *
 from . import slynk, util, sexpdata
 

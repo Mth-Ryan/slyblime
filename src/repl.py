@@ -1,350 +1,275 @@
-from sublime import *
-import sublime_plugin, threading, asyncio, queue  # import the required modules
+"""Sublime Text view and commands for Slynk's channel based REPL."""
 
-from operator import itemgetter
+import asyncio
 import itertools
+import sublime
+import sublime_plugin
 
-from . import slynk, util, sexpdata
-from .sly import *
-import logging
-import functools
-import concurrent.futures
-
-from SublimeREPL import sublimerepl
-from SublimeREPL.repls import repl
-from . import pydispatch
+from . import sly, util
 
 
-def prepare_backtrack_phantom(region, regions_index, value_index):
-    [prefix, infix, postfix] = settings().get("repl")['backtracking']["affixes"]
-    return Phantom(region,
-                   f"{prefix}{regions_index}{infix}{value_index}{postfix}",
-                   LAYOUT_INLINE)
-
-class ReplWrapper(repl.Repl):
-    def __init__(self, slynk_repl):
-        super().__init__("utf-8", "lisp")
-        self.slynk_repl = slynk_repl
-        self._killed = False
-
-    # Sublime REPL specific
-    def read_bytes(self):
-        return None
-
-    def write(self, to_write):
-        self.slynk_repl.process(to_write)
+def prepare_backtrack_phantom(region, group_index, value_index):
+    prefix, infix, postfix = sly.settings().get("repl")["backtracking"]["affixes"]
+    return sublime.Phantom(
+        region,
+        f"{prefix}{group_index}{infix}{value_index}{postfix}",
+        sublime.LAYOUT_INLINE,
+    )
 
 
-class EventBasedReplView(sublimerepl.ReplView):
-    NEWLINE_SEQUENCE = "\n"  # To allow for future configurability
+class SlyInsertTextCommand(sublime_plugin.TextCommand):
+    """Insert text in a view without relying on SublimeREPL commands."""
 
-    def __init__(self, session, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.repl.slynk_repl.bind(
+    def run(self, edit, pos, text):
+        self.view.insert(edit, int(pos), text)
+
+
+class SlyReplAppendCommand(sublime_plugin.TextCommand):
+    """Append server output while preserving the REPL's read-only state."""
+
+    def run(self, edit, text, read_only=None):
+        view = self.view
+        previous_read_only = view.is_read_only()
+        view.set_read_only(False)
+        end = view.size()
+        view.insert(edit, end, text)
+        end += len(text)
+        view.sel().clear()
+        view.sel().add(sublime.Region(end, end))
+        view.show(end)
+        view.set_read_only(previous_read_only if read_only is None else read_only)
+
+
+class SlyReplView:
+    def __init__(self, session, view, repl):
+        self.session = session
+        self.view = view
+        self.repl = repl
+        self.channel_id = repl.channel.id
+        self.input_start = view.size()
+        self.closed_view = False
+        self.value_phantom_groups = []
+        self.backtrack_phantom_set = sublime.PhantomSet(view, "backtracking")
+        view.settings().set("is-sly-repl", True)
+        view.settings().set("sly-session-id", session.id)
+        view.settings().set("sly-channel-id", self.channel_id)
+        view.set_read_only(True)
+        repl.bind(
             write_string=self.on_print,
             write_values=self.on_write_values,
             prompt=self.on_prompt,
             evaluation_aborted=self.on_evaluation_aborted,
-            server_side_repl_close=self.on_server_side_repl_close)
-        self.session = session
-        self.playing = False
-        self.play()
-        self.value_phantom_groups = []
-        self.id = self.repl.slynk_repl.channel.id
+            server_side_repl_close=self.on_server_side_repl_close,
+        )
+        repl.play_events()
 
-        self.backtrack_phantom_set = PhantomSet(self._view, "backtracking")
-        self._view.settings().set("sly-session-id", session.id)
-        self._view.settings().set("is-sly-repl", True)
-        self._view.settings().set("sly-channel-id", self.id)
-        self._view.settings().set("sly-open-repl", True)
-        self._view.settings().set("sly-repl-status", self._view.get_status("sly"))
+    def append(self, text, read_only=None):
+        if not self.closed_view:
+            args = {"text": str(text)}
+            if read_only is not None:
+                args["read_only"] = read_only
+            self.view.run_command("sly_repl_append", args)
 
-        self.preserved_data = {}
-    def play(self):
-        self.playing = True
-        self.repl.slynk_repl.play_events()
+    def final_character(self):
+        return self.view.substr(self.view.size() - 1) if self.view.size() else ""
 
-    def pause(self):
-        self.playing = False
-        self.repl.slynk_repl.pause_events()
-
-    def update_view_loop(self):
-        return True
-
-    def get_final_character(self):
-        return self._view.substr(self._view.size() - 1)
-
-    # Works exactly like (FRESH-LINE) in CL
     def fresh_line(self):
-        if self.get_final_character() != self.NEWLINE_SEQUENCE:
-            self.write(self.NEWLINE_SEQUENCE)
-
-    def prevent_double_newline(self, to_write):
-        is_enabled = settings().get("repl")["avoid_double_newline"]
-        are_matching = self.get_final_character() == self.NEWLINE_SEQUENCE == to_write[0]
-        if is_enabled and are_matching:
-            return to_write[1:]
-        else:
-            return to_write
-
-    # This is a placeholder so super.update_view_loop
-    # can be called to close the REPL if needed.
-    def handle_repl_output(self):
-        return False
+        if self.view.size() and self.final_character() != "\n":
+            self.append("\n")
 
     def on_print(self, message, *args):
         self.fresh_line()
-        self.write(self.prevent_double_newline(str(message)))
+        text = str(message)
+        if (sly.settings().get("repl").get("avoid_double_newline", True)
+                and self.final_character() == "\n" and text.startswith("\n")):
+            text = text[1:]
+        self.append(text)
 
     def on_write_values(self, values, *args):
-        # If there is nothing, we don't want to add an empty value grop
-        if len(values) < 1:
-            return
-        phantom_group_index = len(self.value_phantom_groups)
+        prefix = sly.settings().get("repl").get("value_prefix", "⟹ ")
+        group_index = len(self.value_phantom_groups)
         phantoms = []
         for value_index, value in enumerate(values):
             self.fresh_line()
+            point = self.view.size()
             phantoms.append(prepare_backtrack_phantom(
-                # First character of next line:
-                Region(self._view.size(), self._view.size()),
-                phantom_group_index,
-                value_index))
-            self.write(settings().get("repl")['value_prefix'] + str(value[0]))
+                sublime.Region(point, point), group_index, value_index))
+            self.append(prefix + str(value[0]))
         self.value_phantom_groups.append(phantoms)
 
-    def on_prompt(self, package, prompt, error_level, *args):
-        terminator = settings().get("repl")['prompt']
-        left = settings().get("repl")['error'][0]
-        right = settings().get("repl")['error'][1]
-        if error_level == 0:
-            prompt = prompt + terminator
-        else:
-            prompt = prompt + left + str(error_level) + right + terminator
-        # Write-prompt makes it glitch out for some reason idky
-        self.fresh_line()
-        start = self._view.size() - 1
-        self.write(prompt)
-        end = self._view.size() - 1
-        self._view.settings().set("package", package)
-        self._view.settings().set("prompt-region", [start, end])
-
-    def on_evaluation_aborted(self, *data):
-        self.fresh_line()
-        self.write("Evaluation aborted for " + " ".join(data))
-
-    def on_server_side_repl_close(self, *data):
-        # TODO set _killed to True if the connexion is lost but
-        # server_side_repl_close doesn't occur
-        self.closed(*data)
-
-    def closed(self, *data):
-        self._view.set_name("🏁" + self._view.name())
-        super().update_view_loop()
-        self.fresh_line()
-        self.write("[🏁 Connexion terminated]")
-        self._view.set_status("sly", "❌ " + self._view.get_status("sly"))
-        self._view.settings().set("sly-open-repl", False)
-        self._view.settings().set("sly-repl-status", self._view.get_status("sly"))
-        self._killed = True
-
-    def show_backtrack_phantoms(self, value_region_group_index=None, value_index=None):
-        if value_index is not None and value_region_group_index is not None:
-            phantoms = [self.value_phantom_groups[value_region_group_index][value_index]]
-        elif value_region_group_index is not None:
-            phantoms = self.value_phantom_groups[value_region_group_index]
-        else:
+    def show_backtrack_phantoms(self, group_index=None, value_index=None):
+        if group_index is None:
             phantoms = list(itertools.chain.from_iterable(self.value_phantom_groups))
+        elif value_index is None:
+            phantoms = self.value_phantom_groups[group_index]
+        else:
+            phantoms = [self.value_phantom_groups[group_index][value_index]]
         self.backtrack_phantom_set.update(phantoms)
 
     def hide_backtrack_phantoms(self):
         self.backtrack_phantom_set.update([])
 
+    def on_prompt(self, package, prompt, error_level, *args):
+        config = sly.settings().get("repl")
+        self.fresh_line()
+        if error_level:
+            prompt = f"{prompt}{config['error'][0]}{error_level}{config['error'][1]}"
+        prompt += config.get("prompt", "⟩ ")
+        start = self.view.size()
+        self.append(prompt, read_only=False)
+        end = self.view.size()
+        self.input_start = end
+        self.view.settings().set("package", package)
+        self.view.settings().set("prompt-region", [start, end])
+
+    def on_evaluation_aborted(self, *data):
+        self.fresh_line()
+        self.append("Evaluation aborted for " + " ".join(map(str, data)))
+
+    def on_server_side_repl_close(self, *data):
+        self.close("[🏁 Slynk closed this REPL channel]")
+
+    def close(self, message="[🏁 Slynk session disconnected]"):
+        if self.closed_view:
+            return
+        self.append("\n" + message, read_only=True)
+        self.closed_view = True
+        self.view.set_name("🏁" + self.view.name())
+        self.view.settings().set("sly-open-repl", False)
+
+
+def get_repl_view(view):
+    if not view or not view.settings().get("is-sly-repl"):
+        return None
+    session_id = view.settings().get("sly-session-id")
+    channel_id = view.settings().get("sly-channel-id")
+    session = sly.sessions.sessions.get(session_id)
+    if session is None:
+        return None
+    repl_view = session.repl_views.get(channel_id)
+    return repl_view if repl_view and repl_view.view.id() == view.id() else None
+
 
 async def create_main_repl(session, window=None):
     window = window or session.window
-    slynk = session.slynk
-    # Mostly copy and pasted from sublimeREPL.sublimerepl.ReplManager
-    try:
-        repl = await slynk.create_repl()
-        view = window.new_file()
-        try:
-            rv = EventBasedReplView(
-                session,
-                view, 
-                ReplWrapper(repl), 
-                settings().get("repl")["syntax"], None)
-        except Exception as e:
-            window.status_message(f"REPL-spawning failure: {str(e)}")
-            return
-        #rv.call_on_close.append(self._delete_repl)
-        session.repl_views[repl.channel.id] = rv
-        sublimerepl.manager.repl_views[rv.repl.id] = rv
-        view.set_scratch(True)
-        view.set_name(util.view_name(
-                        slynk,
-                        settings().get("repl")["view_title_affixes"],
-                        repl.channel.id))
-        return rv
-    except Exception as e:
-        print("ReplCreationException", e)
-        traceback.print_exc()
-        sublime.error_message(repr(e))
+    repl = await session.slynk.create_repl()
+    view = window.new_file()
+    view.set_scratch(True)
+    view.assign_syntax(sly.settings().get("repl")["syntax"])
+    repl_view = SlyReplView(session, view, repl)
+    session.repl_views[repl.channel.id] = repl_view
+    view.set_name(util.view_name(
+        session.slynk,
+        sly.settings().get("repl")["view_title_affixes"],
+        repl.channel.id,
+    ))
+    view.settings().set("sly-open-repl", True)
+    return repl_view
 
 
 class SlyCreateReplCommand(sublime_plugin.WindowCommand):
     def run(self, **kwargs):
-        global loop
-        session = sessions.get_by_window(self.window)
-        if session is None: return
-        asyncio.run_coroutine_threadsafe(create_main_repl(session), loop)
+        session = sly.sessions.get_by_window(self.window)
+        if session is not None:
+            asyncio.run_coroutine_threadsafe(create_main_repl(session), sly.loop)
 
 
-class ReplNewlineCommand(sublime_plugin.TextCommand):
-    def run(self, edit):
-        if not (repl_view := sublimerepl.manager.repl_view(self.view)): 
+class SlyOpenReplCommand(sublime_plugin.WindowCommand):
+    def run(self, **kwargs):
+        session = sly.sessions.get_by_window(self.window)
+        if session is None:
             return
-        view = repl_view._view
-        selection = view.sel()
-        caret_point = selection[len(selection) - 1].begin()
-        view.insert(edit, caret_point, "\n")
+        asyncio.run_coroutine_threadsafe(self.async_run(session), sly.loop)
+
+    async def async_run(self, session):
+        live_repls = [item for item in session.repl_views.values() if not item.closed_view]
+        choices = [["Create new REPL", "Open a new Slynk channel"]]
+        choices += [[item.view.name(), "Switch to this REPL"] for item in live_repls]
+        selected = await util.show_quick_panel(sly.loop, self.window, choices, 0)
+        if selected < 0:
+            return
+        if selected == 0:
+            repl_view = await create_main_repl(session, self.window)
+        else:
+            repl_view = live_repls[selected - 1]
+        self.window.focus_view(repl_view.view)
 
 
-def get_repl_view(view):
-    if (view.settings().get("is-sly-repl")
-        and (repl_view := sublimerepl.manager.repl_view(view))): 
-        return repl_view
-    return False
+class SlyReplSubmitCommand(sublime_plugin.TextCommand):
+    def run(self, edit):
+        repl_view = get_repl_view(self.view)
+        if repl_view is None or repl_view.closed_view:
+            return
+        selection = self.view.sel()[0]
+        end = self.view.size()
+        if selection.end() != end or selection.begin() < repl_view.input_start:
+            self.view.window().status_message("Enter is available at the current REPL prompt")
+            return
+        expression = self.view.substr(sublime.Region(repl_view.input_start, end))
+        repl_view.append("\n", read_only=True)
+        self.view.settings().set("sly-open-repl", True)
+        repl_view.session.loop.call_soon_threadsafe(repl_view.repl.process, expression)
+
+
+class SlyReplNewlineCommand(sublime_plugin.TextCommand):
+    def run(self, edit):
+        repl_view = get_repl_view(self.view)
+        if repl_view is None or self.view.is_read_only():
+            return
+        point = self.view.sel()[0].begin()
+        if point < repl_view.input_start:
+            self.view.window().status_message("Input can only be added at the current REPL prompt")
+            return
+        self.view.insert(edit, point, "\n")
 
 
 class SlyReplListener(sublime_plugin.EventListener):
     def on_modified(self, view):
-        if not (repl_view := get_repl_view(view)): 
+        repl_view = get_repl_view(view)
+        if repl_view is None:
             return
-        caret_point = view.sel()[0].begin()
-        closest_match = util.find_closest(
-            view,
-            caret_point,
-            r"(?i)#v([0-9|\w]*(:[0-9]*)?)?\w*")
-        if closest_match and closest_match.contains(caret_point):
-            config = settings().get("repl")['backtracking']
-            failed = False
-            parts = None
-            try:
-                string = view.substr(closest_match)
-                parts = [util.safe_int(index) 
-                         for index in string[2:].split(":")]
-                if len(parts) < 2 or parts[0] is not None:
-                    repl_view.show_backtrack_phantoms(*parts)
-                else:
-                    failed = True
-            except (IndexError, ValueError):
-                # To test if it is possible to show the phantoms for
-                # at least the value group
-                failed = True
-                if parts and len(parts) == 2:
-                    try:
-                        repl_view.show_backtrack_phantoms(parts[0])
-                    except IndexError:
-                        pass
-            style = config["invalid_region" if failed or ':' == string[-1]
-                                                      or len(parts) == 0
-                                            else "valid_region"]
-            view.add_regions(
-                "backtracking", [closest_match], style["scope"],
-                "", util.compute_flags(style["flags"]))
-        else:
+        if view.is_read_only():
+            view.erase_regions("backtracking")
+            repl_view.hide_backtrack_phantoms()
+            return
+
+        cursor = view.sel()[0].begin()
+        match = util.find_closest(view, cursor, r"(?i)#v([0-9|\w]*(:[0-9]*)?)?\w*")
+        if not match or not match.contains(cursor):
             repl_view.hide_backtrack_phantoms()
             view.erase_regions("backtracking")
+            return
+
+        text = view.substr(match)
+        parts = [util.safe_int(index) for index in text[2:].split(":")]
+        failed = False
+        try:
+            if len(parts) < 2 or parts[0] is not None:
+                repl_view.show_backtrack_phantoms(*parts)
+            else:
+                failed = True
+        except (IndexError, ValueError):
+            failed = True
+            if len(parts) == 2 and parts[0] is not None:
+                try:
+                    repl_view.show_backtrack_phantoms(parts[0])
+                except IndexError:
+                    pass
+
+        config = sly.settings().get("repl")["backtracking"]
+        style = config["invalid_region" if failed or text.endswith(":") or not parts
+                       else "valid_region"]
+        view.add_regions(
+            "backtracking", [match], style["scope"], "",
+            util.compute_flags(style["flags"]),
+        )
 
     def on_selection_modified(self, view):
-        if view.settings().get("enable-test"):
-            view.run_command("show_scope_name")
-            view.add_regions("test", [util.find_containing_form(view) or Region(0,0)], "region.greenish")
         self.on_modified(view)
 
-    def on_pre_close(self, view):
-        if not (rv := get_repl_view(view)): 
-            return
-        rv.pause()
-        rv.preserved_data = {
-            "settings": list(view.settings().to_dict().items()),
-            "contents": view.substr(Region(0, view.size())),
-            "name": view.name(),
-            "scratch": view.is_scratch()
-        }
-
-def prepare_preview(repl_view: EventBasedReplView):
-    slynk = repl_view.session.slynk
-    lisp = slynk.connexion_info.lisp_implementation
-
-    try: port_info = f"{slynk.host}:{slynk.port} on {slynk.connexion_info.machine.instance}"
-    except: port_info = "Error fetching connexion information"
-
-    if repl_view.playing:
-        repl_info = "REPL currently open, select to switch."
-    else:
-        repl_info = "REPL frozen; select to thaw and switch. A small delay may occur."
-    return [
-        f"{lisp.name}❭{port_info} channel {repl_view.id}", 
-        repl_info]
-
-
-async def repl_choice(loop, window, session):
-    choices = ([["Create new inferior Lisp REPL", "Avoid spamming REPLs please."]] 
-                 + [prepare_preview(repl_view) 
-                        for repl_view in session.repl_views.values()])
-    choice = await util.show_quick_panel(
-        loop,
-        window,
-        choices,
-        0,
-        1)
-    if choice == 0:
-        return "new-repl"
-    return list(session.repl_views.values())[choice-1] if choice != -1 else None
-
-
-def thaw_repl(view, repl_view):
-    data = repl_view.preserved_data
-    for key, value in data["settings"]:
-        if key in settings()["repl"]["settings_not_to_copy"]: 
-            continue # Exceptions
-        view.settings()[key] = value
-    view.set_name(data["name"])
-    view.set_scratch(data["scratch"])
-    view.run_command("repl_insert_text", 
-        {"pos": 0,
-         "text": data["contents"]})
-    view.show_at_center(len(data["contents"])-1)
-    repl_view._view = view
-    repl_view.play()
-    repl_view.preserved_data = {}
-    repl_view.backtrack_phantom_set = PhantomSet(view, "backtracking")
-    return view
-
-class SlyOpenReplCommand(sublime_plugin.WindowCommand):
-    def run(self, **kwargs):
-        session = sessions.get_by_window(self.window)
-        if session is None: return
-        asyncio.run_coroutine_threadsafe(
-            self.async_run(session, **kwargs),
-            loop)
-        util.set_status(self.window.active_view(), session)
-
-    async def async_run(self, session, **kwargs):
-      try:
-        repl_view = await repl_choice(loop, self.window, session)
-        if repl_view is None: return
-        if repl_view == "new-repl":
-            repl_view = await create_main_repl(session, self.window)
-        elif not repl_view.playing:
-            thaw_repl(self.window.new_file(), repl_view)
-
-        view = repl_view._view
-        window = view.window()
-        util.set_status(view, session)
-        window.focus_view(view)
-        window.bring_to_front()
-
-      except Exception as e:
-        print(f"SlyOpenReplCommandException: {e}")
+    def on_close(self, view):
+        repl_view = get_repl_view(view)
+        if repl_view:
+            repl_view.closed_view = True
+            repl_view.repl.pause_events()
+            repl_view.session.repl_views.pop(repl_view.channel_id, None)

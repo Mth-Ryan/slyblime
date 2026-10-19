@@ -216,9 +216,10 @@ class SlynkClient(
             return repl, information
         return repl
 
-    async def prepare(self, path=pathlib.Path().parent.absolute()):
+    async def prepare(self, path=None):
         # Missing C-P-C, Fuzzy, Presentations from SLIMAß
-        await self.add_load_paths(f"{path}/sly/contrib/")
+        if path is not None:
+            await self.add_load_paths(f"{path}/sly/contrib/")
         await self.require(
             ["slynk/indentation",
              "slynk/stickers",

@@ -149,7 +149,7 @@ def send_result_to_panel(window, text=None, result="[No result]", header="[Comma
     origin = view.size()
     region = Region(origin+len(out[0]), origin+len(out[0])+len(out[1]))
     out = "".join(out)
-    view.run_command("repl_insert_text",
+    view.run_command("sly_insert_text",
         {"pos": view.size(),
          "text": out})
     window.focus_view(view)

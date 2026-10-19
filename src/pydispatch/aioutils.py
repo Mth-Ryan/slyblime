@@ -1,7 +1,6 @@
 import asyncio
 import threading
 from _weakref import ref
-from _weakrefset import _IterationGuard
 
 from .utils import (
     WeakMethodContainer,
@@ -25,7 +24,7 @@ class AioEmissionHoldLock(object):
         key = id(loop)
         lock = self.aio_locks.get(key)
         if lock is None:
-            lock = asyncio.Lock(loop=loop)
+            lock = asyncio.Lock()
             self.aio_locks[key] = lock
         return lock
     async def acquire_async(self):
@@ -35,7 +34,7 @@ class AioEmissionHoldLock(object):
             await lock.acquire()
     async def release_async(self):
         lock = await self._build_aio_lock()
-        if lock.locked:
+        if lock.locked():
             lock.release()
         self.release()
     async def __aenter__(self):
@@ -112,7 +111,7 @@ class AioEventWaiter(object):
     __slots__ = ('loop', 'aio_event', 'args', 'kwargs')
     def __init__(self, loop):
         self.loop = loop
-        self.aio_event = asyncio.Event(loop=loop)
+        self.aio_event = asyncio.Event()
         self.args = []
         self.kwargs = {}
     def trigger(self, *args, **kwargs):
@@ -217,13 +216,11 @@ class AioWeakMethodContainer(WeakMethodContainer):
         def remove(wr, selfref=ref(self)):
             self = selfref()
             if self is not None:
-                if self._iterating:
-                    self._pending_removals.append(wr.key)
-                else:
-                    # Atomic removal is necessary since this function
-                    # can be called asynchronously by the GC
-                    _remove_dead_weakref(self.data, wr.key)
-                    self._on_weakref_fin(wr.key)
+                # Iteration uses a snapshot of keys, so weakref callbacks can
+                # remove entries immediately without WeakValueDictionary's
+                # private iteration bookkeeping.
+                _remove_dead_weakref(self.data, wr.key)
+                self._on_weakref_fin(wr.key)
         self._remove = remove
         self.event_loop_map = {}
     def add_method(self, loop, callback):
@@ -243,8 +240,9 @@ class AioWeakMethodContainer(WeakMethodContainer):
 
         .. seealso:: :meth:`pydispatch.utils.WeakMethodContainer.iter_instances`
         """
-        with _IterationGuard(self):
-            yield from super().iter_instances()
+        # WeakMethodContainer snapshots its keys before dereferencing them.
+        # _IterationGuard was an undocumented CPython helper removed in 3.14.
+        yield from super().iter_instances()
     def iter_methods(self):
         """Iterate over stored coroutine functions
 
@@ -278,8 +276,7 @@ class AioWeakMethodContainer(WeakMethodContainer):
             to be called directly.
         """
         async def _do_call(_coro):
-            with _IterationGuard(self):
-                await _coro
+            await _coro
         asyncio.run_coroutine_threadsafe(_do_call(coro), loop=loop)
     def __call__(self, *args, **kwargs):
         """Triggers all stored callbacks (coroutines)

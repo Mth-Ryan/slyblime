@@ -77,7 +77,12 @@ __all__ = [
 ]
 
 import re
-from collections import namedtuple, Iterable, Mapping
+from collections import namedtuple
+try:
+    # Python 3.10 removed these aliases from collections.
+    from collections.abc import Iterable, Mapping
+except ImportError:  # Sublime Text's legacy Python 3.3 host
+    from collections import Iterable, Mapping
 from itertools import chain
 from string import whitespace
 

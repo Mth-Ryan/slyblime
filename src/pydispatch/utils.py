@@ -127,13 +127,11 @@ class InformativeWVDict(weakref.WeakValueDictionary):
         def remove(wr, selfref=ref(self)):
             self = selfref()
             if self is not None:
-                if self._iterating:
-                    self._pending_removals.append(wr.key)
-                else:
-                    # Atomic removal is necessary since this function
-                    # can be called asynchronously by the GC
-                    _remove_dead_weakref(self.data, wr.key)
-                    self._data_del_callback(wr.key)
+                # Python 3.14 no longer exposes WeakValueDictionary's
+                # _iterating/_pending_removals internals. The stored mapping is
+                # private to this class and _remove_dead_weakref is atomic.
+                _remove_dead_weakref(self.data, wr.key)
+                self._data_del_callback(wr.key)
         self._remove = remove
         self.data = InformativeDict()
         self.data.del_callback = self._data_del_callback
