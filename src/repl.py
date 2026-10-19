@@ -40,6 +40,19 @@ class SlyReplAppendCommand(sublime_plugin.TextCommand):
         view.set_read_only(previous_read_only if read_only is None else read_only)
 
 
+class SlyReplRestoreSnapshotCommand(sublime_plugin.TextCommand):
+    """Restore REPL content if an edit reaches protected history."""
+
+    def run(self, edit, text, point):
+        view = self.view
+        previous_read_only = view.is_read_only()
+        view.set_read_only(False)
+        view.replace(edit, sublime.Region(0, view.size()), text)
+        view.sel().clear()
+        view.sel().add(sublime.Region(int(point), int(point)))
+        view.set_read_only(previous_read_only)
+
+
 class SlyReplView:
     def __init__(self, session, view, repl):
         self.session = session
@@ -47,6 +60,9 @@ class SlyReplView:
         self.repl = repl
         self.channel_id = repl.channel.id
         self.input_start = view.size()
+        self.snapshot_text = view.substr(sublime.Region(0, view.size()))
+        self._internal_edit = False
+        self._restoring = False
         self.closed_view = False
         self.value_phantom_groups = []
         self.backtrack_phantom_set = sublime.PhantomSet(view, "backtracking")
@@ -68,7 +84,31 @@ class SlyReplView:
             args = {"text": str(text)}
             if read_only is not None:
                 args["read_only"] = read_only
-            self.view.run_command("sly_repl_append", args)
+            self._internal_edit = True
+            try:
+                self.view.run_command("sly_repl_append", args)
+            finally:
+                self._internal_edit = False
+            if self.view.is_read_only():
+                self.input_start = self.view.size()
+            self.capture_snapshot()
+
+    def capture_snapshot(self):
+        self.snapshot_text = self.view.substr(
+            sublime.Region(0, self.view.size()))
+
+    def restore_snapshot(self):
+        selection = self.view.sel()
+        point = selection[0].begin() if selection else self.input_start
+        point = min(max(point, self.input_start), len(self.snapshot_text))
+        self._restoring = True
+        try:
+            self.view.run_command("sly_repl_restore_snapshot", {
+                "text": self.snapshot_text,
+                "point": point,
+            })
+        finally:
+            self._restoring = False
 
     def final_character(self):
         return self.view.substr(self.view.size() - 1) if self.view.size() else ""
@@ -119,6 +159,7 @@ class SlyReplView:
         self.append(prompt, read_only=False)
         end = self.view.size()
         self.input_start = end
+        self.capture_snapshot()
         self.view.settings().set("package", package)
         self.view.settings().set("prompt-region", [start, end])
 
@@ -207,6 +248,8 @@ class SlyReplSubmitCommand(sublime_plugin.TextCommand):
             return
         expression = self.view.substr(sublime.Region(repl_view.input_start, end))
         repl_view.append("\n", read_only=True)
+        repl_view.input_start = self.view.size()
+        repl_view.capture_snapshot()
         self.view.settings().set("sly-open-repl", True)
         repl_view.session.loop.call_soon_threadsafe(repl_view.repl.process, expression)
 
@@ -228,6 +271,19 @@ class SlyReplListener(sublime_plugin.EventListener):
         repl_view = get_repl_view(view)
         if repl_view is None:
             return
+        if repl_view._internal_edit or repl_view._restoring:
+            return
+
+        current_text = view.substr(sublime.Region(0, view.size()))
+        protected_text = repl_view.snapshot_text[:repl_view.input_start]
+        history_changed = current_text[:repl_view.input_start] != protected_text
+        read_only_content_changed = view.is_read_only() and current_text != repl_view.snapshot_text
+        if history_changed or read_only_content_changed:
+            repl_view.restore_snapshot()
+            view.window().status_message("REPL history and prompts cannot be edited")
+            return
+
+        repl_view.capture_snapshot()
         if view.is_read_only():
             view.erase_regions("backtracking")
             repl_view.hide_backtrack_phantoms()

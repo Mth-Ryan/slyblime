@@ -68,9 +68,15 @@ class FakeView:
     def insert(self, edit, point, text):
         self.text = self.text[:point] + text + self.text[point:]
 
+    def replace(self, edit, region, text):
+        self.text = self.text[:region.begin()] + text + self.text[region.end():]
+
     def run_command(self, name, args):
         if name == "sly_repl_append":
             command = REPL_MODULE.SlyReplAppendCommand(self)
+            command.run(object(), **args)
+        elif name == "sly_repl_restore_snapshot":
+            command = REPL_MODULE.SlyReplRestoreSnapshotCommand(self)
             command.run(object(), **args)
 
     def sel(self):
@@ -83,6 +89,9 @@ class FakeView:
         self.read_only = value
 
     def show(self, point):
+        pass
+
+    def erase_regions(self, name):
         pass
 
     def set_name(self, name):
@@ -166,6 +175,7 @@ class ReplViewTests(unittest.TestCase):
         sly.loop = FakeLoop()
         util = types.ModuleType("src.util")
         util.view_name = lambda *args: "Sly REPL"
+        util.find_closest = lambda *args: None
         sys.modules["src.sly"] = sly
         sys.modules["src.util"] = util
         REPL_MODULE = importlib.import_module("src.repl")
@@ -221,6 +231,34 @@ class ReplViewTests(unittest.TestCase):
         self.assertEqual(repl.sent, ["(+ 1 2)"])
         self.assertTrue(view.is_read_only())
         self.assertTrue(view.text.endswith("\n"))
+        REPL_MODULE.sly.sessions.sessions.clear()
+
+    def test_edits_to_prompt_and_repl_history_are_restored(self):
+        view = FakeView()
+        session = types.SimpleNamespace(id=7, repl_views={}, loop=FakeLoop())
+        repl = FakeRepl()
+        repl_view = REPL_MODULE.SlyReplView(session, view, repl)
+        session.repl_views[repl.channel.id] = repl_view
+        REPL_MODULE.sly.sessions.sessions[session.id] = session
+        repl_view.on_prompt("CL-USER", "CL-USER", 0)
+
+        view.text += "(+ 20 22)"
+        view.selection = FakeSelection([Region(view.size())])
+        REPL_MODULE.SlyReplListener().on_modified(view)
+        REPL_MODULE.SlyReplSubmitCommand(view).run(object())
+        repl_view.on_write_values([["42", 0, "42"]])
+        repl_view.on_prompt("CL-USER", "CL-USER", 0)
+        expected = view.text
+        expected_input_start = repl_view.input_start
+
+        # Simulate deleting text from the beginning of the transcript, including
+        # the first prompt; Sublime's listener must restore the immutable prefix.
+        view.text = view.text[1:]
+        view.selection = FakeSelection([Region(0)])
+        REPL_MODULE.SlyReplListener().on_modified(view)
+
+        self.assertEqual(view.text, expected)
+        self.assertGreaterEqual(view.sel()[0].begin(), expected_input_start)
         REPL_MODULE.sly.sessions.sessions.clear()
 
 
