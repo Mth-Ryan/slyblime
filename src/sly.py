@@ -7,6 +7,7 @@ from . import util, sexpdata, debugger, filename_translation
 from .debugger import Debugger
 from .slynk import slynk
 from .tracer import Tracer
+from .inferior_startup import connect_when_ready, wait_for_startup
 import logging
 import functools
 from socket import socket
@@ -57,7 +58,10 @@ class SlynkSession:
     async def connect(self):
         slynk = self.slynk
         self.window.status_message(f"Attempting to connect to Slynk at {slynk.host}:{slynk.port} [≈ 1 min]")
-        await slynk.connect(self.loop)
+        if self.process:
+            await connect_when_ready(slynk, self.loop)
+        else:
+            await slynk.connect(self.loop)
         local_package_path = (
             f"{packages_path()}/{__name__.split('.')[0]}" if self.process else None
         )
@@ -166,6 +170,7 @@ class SlyStartLispCommand(sublime_plugin.WindowCommand):
 
     async def async_run(self, **kwargs):  # implement run method
         session = None
+        output_task = None
         try:
             params = settings().get("inferior_lisp_process")
             command = params["command"]
@@ -196,7 +201,7 @@ class SlyStartLispCommand(sublime_plugin.WindowCommand):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
-            asyncio.create_task(self.log_all(session.process))
+            output_task = asyncio.create_task(self.log_all(session.process))
 
             loader_path = (
                 f"{packages_path()}/{__name__.split('.')[0]}"
@@ -222,14 +227,21 @@ class SlyStartLispCommand(sublime_plugin.WindowCommand):
             session.process.stdin.write(boot_script.encode("utf-8"))
             await session.process.stdin.drain()
 
-            await asyncio.wait_for(session.connect(), timeout=60)
+            await wait_for_startup(session.connect(), session.process, timeout=60)
             sessions.add(session)
             sessions.set_by_window(self.window, session)
         except Exception as e:
             self.window.status_message(f"Failed to start Lisp process: {e}")
             print(f"Failed to start Lisp process: {e}")
             if session and session.process and session.process.returncode is None:
-                session.process.terminate()
+                try:
+                    session.process.terminate()
+                except ProcessLookupError:
+                    pass
+            if session and session.process:
+                await session.process.wait()
+            if output_task:
+                await output_task
 
     async def log_all(self, p):
         while True:
